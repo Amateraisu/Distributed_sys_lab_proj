@@ -128,7 +128,7 @@ int main(int argc, char** argv) {
     set_epoch();
     std::cout << next_id() << '\n';
     int sock_fd = socket(AF_INET, SOCK_DGRAM, 0);
-    char const* SERVER_IP = "192.168.1.10";
+    char const* SERVER_IP = "123124154";
     if (sock_fd < 0) {
         perror("Socket");
         exit(EXIT_FAILURE);
