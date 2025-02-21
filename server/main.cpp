@@ -274,6 +274,8 @@ int main(int argc, char** argv) {
     little_endian = check_local_endian();
     std::map<FacilityDay, std::array<unsigned int, 1440>> Availabilities;
     std::map<ll, BookingDetail>Bookings;
+    
+    std::map<uint64_t, bool>request_history;
 
     int udp_fd, epoll_fd;
     struct sockaddr_in addr;
@@ -326,9 +328,21 @@ int main(int argc, char** argv) {
                 buffer[MAX_PACKET_SIZE - 1] = '\0';
             }
 
+            // Use a random number generator with a uniform distribution
+            std::random_device rd;
+            std::mt19937 gen(rd());  // Seed RNG
+            std::uniform_int_distribution<int> dis(0, 1);
+
+            if (dis(gen) == 0) {  // 50% chance
+                std::cout << "Simulated packet loss! Ignoring request.\n";
+                continue;
+            }
+
             bool is_little_endian = check_endian(buffer);
             struct Req* request_header = (struct Req*)(buffer + 1);
             uint64_t request_id = request_header->request_id;
+            if (request_history.find(request_id) != request_history.end()) continue; // at-most once semantics;
+            request_history[request_id] = 1;
             uint32_t op_code = request_header->op_code;
             uint64_t payload_len = request_header->payload_len;
             char* payload = (char*)request_header + sizeof(struct Req);
