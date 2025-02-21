@@ -16,6 +16,8 @@
 
 #define SERVER_PORT 8080
 #define MAX_BUFFER_SIZE 1024
+#define SERVER_IP "192.168.1.10"
+
 
 using namespace std::chrono;
 
@@ -122,15 +124,77 @@ void set_epoch() {
     t.tm_sec = 54;
 }
 
+//    char const* msg = "LT1%M%T"; // this is for op_code1
+//    char const* msg = "LT1%M%2%1000"; // this is for op_code2
+//    char const* msg = "1891416443040444417%30"; // opcode 3
+//char const* msg = "LT1%2"; // opcode 4
 
+void send_request(int sock_fd, struct sockaddr_in server_addr, std::string request_msg, uint32_t op_code) {
+    char buffer[MAX_BUFFER_SIZE];
+    Req req_header;
+    req_header.request_id = next_id();
+    req_header.op_code = op_code;
+    req_header.payload_len = request_msg.size() + 1;
 
-int main(int argc, char** argv) {
+    memcpy(buffer + 1, &req_header, sizeof(req_header));
+    memcpy(buffer + sizeof(Req) + 1, request_msg.c_str(), req_header.payload_len);
+    buffer[0] = '1';
+
+    uint64_t total_length = sizeof(req_header) + req_header.payload_len + 1;
+    buffer[total_length] = '\0';
+
+    if (total_length > MAX_BUFFER_SIZE) {
+        std::cerr << "Message too large!\n";
+        return;
+    }
+
+    socklen_t server_len = sizeof(server_addr);
+    int max_retries = 3; // Maximum number of retries
+    int attempt = 0;
+    bool received_response = false;
+
+    while (attempt < max_retries) {
+        attempt++;
+        std::cout << "Attempt " << attempt << " - Sending request: " << request_msg
+                  << " (op_code: " << op_code << ")\n";
+
+        ssize_t sent_bytes = sendto(sock_fd, buffer, total_length, 0,
+                                    (struct sockaddr*)&server_addr, sizeof(server_addr));
+        if (sent_bytes < 0) {
+            perror("sendto");
+            return;
+        }
+
+        // Set timeout for response
+        struct timeval tv;
+        tv.tv_sec = 2; // 2 seconds timeout
+        tv.tv_usec = 0;
+        setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+
+        // Wait for response
+        ssize_t bytes_read = recvfrom(sock_fd, buffer, sizeof(buffer), 0,
+                                      (struct sockaddr*)&server_addr, &server_len);
+        if (bytes_read > 0) {
+            received_response = true;
+            buffer[bytes_read] = '\0';
+            std::string reply(buffer + 1 + sizeof(Rep), bytes_read - 1 - sizeof(Rep));
+            std::cout << "✅ Received response: " << reply << "\n";
+            break; // Exit loop if a response is received
+        } else {
+            std::cerr << "⚠️ Timeout waiting for server response. Retrying...\n";
+        }
+    }
+
+    if (!received_response) {
+        std::cerr << "❌ No response from server after " << max_retries << " attempts. Giving up.\n";
+    }
+}
+
+int main() {
     set_epoch();
-    std::cout << next_id() << '\n';
     int sock_fd = socket(AF_INET, SOCK_DGRAM, 0);
-    char const* SERVER_IP = "123124154";
     if (sock_fd < 0) {
-        perror("Socket");
+        perror("Socket creation failed");
         exit(EXIT_FAILURE);
     }
 
@@ -138,50 +202,44 @@ int main(int argc, char** argv) {
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(SERVER_PORT);
+
     if (inet_pton(AF_INET, SERVER_IP, &server_addr.sin_addr) <= 0) {
         perror("inet_pton");
-        exit(EXIT_FAILURE);
-    }
-
-    char buffer[MAX_BUFFER_SIZE];
-    Req req_header;
-    req_header.request_id = next_id();
-    req_header.op_code = 4;
-//    char const* msg = "LT1%M%T"; // this is for op_code1
-//    char const* msg = "LT1%M%2%1000"; // this is for op_code2
-//    char const* msg = "1891416443040444417%30"; // opcode 3
-    char const* msg = "LT1%2"; // opcode 4
-    // op_code2 = "facility_name%Day%START%END // convert user input into integers first;8
-    req_header.payload_len = strlen(msg) + 1; // including the null length;
-    memcpy(buffer + 1, &req_header, sizeof(req_header));
-    memcpy(buffer + sizeof(Req) + 1, msg, req_header.payload_len);
-    buffer[0] = '1';
-    uint64_t total_length = sizeof(req_header) + req_header.payload_len + 1;
-    buffer[total_length] = '\0';
-    if (total_length > MAX_BUFFER_SIZE) {
-        fprintf(stderr, "Message too large!\n");
-        close(sock_fd);
-        exit(EXIT_FAILURE);
-
-    }
-
-
-    ssize_t sent_bytes = sendto(sock_fd, buffer, total_length, 0, (struct sockaddr*)&server_addr, sizeof(server_addr));
-    if (sent_bytes < 0 ) {
-        perror("sendto");
         close(sock_fd);
         exit(EXIT_FAILURE);
     }
-    printf("Sent bytes to the server %d : %s\n", total_length, msg);
-    while (1) {
-        socklen_t server_len = sizeof(server_addr);
-        ssize_t bytes_read = recvfrom(sock_fd, buffer, sizeof(buffer), 0, (struct sockaddr*)&server_addr, &server_len);
-        buffer[bytes_read] = '\0';
-        std::string s(buffer + 1 + sizeof(Rep), bytes_read - 1 - sizeof(Rep));
-        std::cout << "Recevied bytes read " << bytes_read << '\n';
-        std::cout << "The reply is : " << s << '\n';
+
+    std::string input;
+    while (true) {
+        std::cout << "\nEnter request (facility_name%params) or 'exit' to quit:\n";
+        std::getline(std::cin, input);
+
+        if (input == "exit") {
+            std::cout << "Exiting client...\n";
+            break;
+        }
+
+        std::cout << "Select operation:\n"
+                  << "1 - Query Availability\n"
+                  << "2 - Book Facility\n"
+                  << "3 - Edit Booking\n"
+                  << "4 - Monitor Facility\n"
+                  << "5 - Reset Availability (Idempotent)\n"
+                  << "6 - Swap Bookings (Non-Idempotent)\n"
+                  << "Enter operation number: ";
+
+        int op_code;
+        std::cin >> op_code;
+        std::cin.ignore(); // Ignore leftover newline
+
+        if (op_code < 1 || op_code > 6) {
+            std::cout << "Invalid operation code. Try again.\n";
+            continue;
+        }
+
+        send_request(sock_fd, server_addr, input, op_code);
     }
+
     close(sock_fd);
-
     return 0;
 }
