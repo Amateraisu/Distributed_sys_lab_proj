@@ -14,9 +14,8 @@
 // ran on a mac system;
 
 
-#define SERVER_PORT 8080
+//#define SERVER_PORT 8080
 #define MAX_BUFFER_SIZE 1024
-#define SERVER_IP "192.168.1.10"
 
 
 using namespace std::chrono;
@@ -171,6 +170,23 @@ void send_request(int sock_fd, struct sockaddr_in server_addr, std::string reque
         tv.tv_usec = 0;
         setsockopt(sock_fd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
 
+        if (op_code == 4) {
+            while (true) {
+                ssize_t bytes_read = recvfrom(sock_fd, buffer, sizeof(buffer), 0,
+                                              (struct sockaddr*)&server_addr, &server_len);
+                if (bytes_read > 0) {
+                    received_response = true;
+                    buffer[bytes_read] = '\0';
+                    std::string reply(buffer + 1 + sizeof(Rep), bytes_read - 1 - sizeof(Rep));
+                    std::cout << "✅ Received response: " << reply << "\n";
+                    break; // Exit loop if a response is received
+                } else {
+                    std::cerr << "⚠️ Timeout waiting for server response. Retrying...\n";
+                }
+
+            }
+        }
+
         // Wait for response
         ssize_t bytes_read = recvfrom(sock_fd, buffer, sizeof(buffer), 0,
                                       (struct sockaddr*)&server_addr, &server_len);
@@ -190,7 +206,7 @@ void send_request(int sock_fd, struct sockaddr_in server_addr, std::string reque
     }
 }
 
-int main() {
+int main(int argc, char** argv) {
     set_epoch();
     int sock_fd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock_fd < 0) {
@@ -198,6 +214,12 @@ int main() {
         exit(EXIT_FAILURE);
     }
 
+    if (argc !=  3) {
+        std::cerr << "Usage: " << argv[0] << "<SERVER_IP> <SERVER_PORT>\n";
+        return 1;
+    }
+    char const* SERVER_IP = argv[1];
+    int SERVER_PORT = std::stoi(argv[2]);
     struct sockaddr_in server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
