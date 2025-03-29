@@ -373,14 +373,14 @@ int main(int argc, char** argv) {
             }
 
             // Use a random number generator with a uniform distribution
-            // std::random_device rd;
-            // std::mt19937 gen(rd());  // Seed RNG
-            // std::uniform_int_distribution<int> dis(0, 1);
+            std::random_device rd;
+            std::mt19937 gen(rd());  // Seed RNG
+            std::uniform_int_distribution<int> dis(0, 1);
 
-            // if (dis(gen) == 0) {  // 50% chance
-            //     std::cout << "Simulated packet loss! Ignoring request.\n";
-            //     continue;
-            // }
+            if (dis(gen) == 0) {  // 50% chance
+                std::cout << "Simulated packet loss! Ignoring request.\n";
+                continue;
+            }
 
             bool is_little_endian = check_endian(buffer);
             struct Req* request_header = (struct Req*)(buffer + 1);
