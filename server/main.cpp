@@ -3,7 +3,7 @@
 
 // ALL THE MACROS
 #define MAX_EVENTS 64
-#define LISTEN_PORT 8080
+// #define LISTEN_PORT 8080
 #define BUF_SIZE 1024
 #define MAX_PACKET_SIZE 1024
 
@@ -13,7 +13,7 @@ char const* success_message = "Success\n";
 char const* error_message = "Woops, invalid input\n";
 std::unordered_map<std::string, std::vector<MonitorClient>> monitor_list;
 int udp_fd_global;
-
+std::optional<std::string> process_query_availabilities(char* payload, std::map<FacilityDay, std::array<unsigned int, 1440>>& Availabilities);
 static int set_nonblock(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0) return -1;
@@ -67,35 +67,59 @@ void cleanup_monitor_list() {
     }
 }
 
-void notify_clients(std::string const& facility) {
-    std::cout << "Trying to notify_clients\n";
-    auto now = time(NULL);
+void notify_clients(std::string const& facility, std::map<FacilityDay, std::array<unsigned int, 1440>>& Availabilities) {
+    std::cout << "Notifying clients for facility: " << facility << "\n";
+    cleanup_monitor_list();
+    auto now = time(nullptr);
+
     auto it = monitor_list.find(facility);
     if (it != monitor_list.end()) {
         std::vector<MonitorClient>& clients = it->second;
-        for (auto client = clients.begin(); client != clients.end(); ++client) {
-            if (client->expiry_time > now) {
-                std::cout << "Sending updates\n";
-                std::string update_msg = "Facility " + facility + " availability changed!";
-                sendto(udp_fd_global, update_msg.c_str(), update_msg.size(), 0, 
-                       (struct sockaddr*)&(client->client_addr), sizeof(client->client_addr));
+
+        // Construct payload to query all 7 days for the facility
+        std::string payload = facility + "%M%T%W%H%F%S%U";
+
+        // Generate the availability string (same format as opcode 1)
+        std::optional<std::string> availability_str = 
+            process_query_availabilities(const_cast<char*>(payload.c_str()), Availabilities);
+
+        if (!availability_str.has_value()) {
+            std::cerr << "Failed to generate availability string for " << facility << "\n";
+            return;
+        }
+
+        // Send the availability string to all monitoring clients
+        std::string update_msg = availability_str.value();
+        for (auto client_it = clients.begin(); client_it != clients.end();) {
+            if (client_it->expiry_time > now) {
+                std::cout << "UPDATE MESSAGE IS " << update_msg << '\n';
+                sendto(
+                    udp_fd_global,
+                    update_msg.c_str(),
+                    update_msg.size(),
+                    0,
+                    (struct sockaddr*)&client_it->client_addr,
+                    sizeof(client_it->client_addr)
+                );
+                ++client_it;
             } else {
-                std::cout << "Expired!\n";
+                client_it = clients.erase(client_it); // Remove expired clients
             }
         }
     }
-    cleanup_monitor_list();
-
 }
 
 // query avail
 std::optional<std::string> process_query_availabilities(char* payload, std::map<FacilityDay, std::array<unsigned int, 1440>>& Availabilities){
+    std::cout << "PROCESSING QUERY AVAIL!\n";
     std::string res;
     std::string payload_str = payload;
     std::vector<std::string>tokens = splitString(payload_str, '%');
     int n = tokens.size();
     std::string facility = tokens[0];
+    std::cout << "FACILITY " << facility << '\n';
     if (Facilities.find(facility) == Facilities.end()) {
+        std::cout << "CANT FIND \n";
         return {};
     }
     for (int i = 1; i < n; ++i) {
@@ -174,7 +198,7 @@ bool try_book(Req* ptr, char* payload, std::map<FacilityDay, std::array<unsigned
     }
     mp[ptr->request_id] = BookingDetail{start, end, std::make_pair(facility_name, d)};
     std::cout << "MADE RECORD " << ptr->request_id << ' ' <<start << ' ' << end << '\n';
-    notify_clients(facility_name);
+    notify_clients(facility_name, Availabilities);
 
     return true;
 }
@@ -211,7 +235,7 @@ bool try_edit_booking(char* payload, std::map<FacilityDay, std::array<unsigned i
     for (ll i = current_start; i <= current_end ; ++i) Availabilities[key][i] = 0;
     for (ll i = new_start; i <= new_end; ++i) Availabilities[key][i] = 1;
     Bookings[request_id] = BookingDetail{new_start, new_end, key};
-    notify_clients(key.first);
+    notify_clients(key.first, Availabilities);
     return true;
     
 
@@ -270,12 +294,32 @@ bool swap_bookings(ll booking_id1, ll booking_id2,
 
 
 int main(int argc, char** argv) {
+
+    if (argc != 2) {
+        std::cerr << "Usage: " << argv[0] << " <PORT>\n";
+        return EXIT_FAILURE;
+    }
+
+    // Parse port from command line
+    int listen_port;
+    try {
+        listen_port = std::stoi(argv[1]);
+        if (listen_port < 0 || listen_port > 65535) {
+            std::cerr << "Port must be between 0 and 65535\n";
+            return EXIT_FAILURE;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Invalid port: " << argv[1] << "\n";
+        return EXIT_FAILURE;
+    }
     // define local data to store availabilities
     little_endian = check_local_endian();
     std::map<FacilityDay, std::array<unsigned int, 1440>> Availabilities;
     std::map<ll, BookingDetail>Bookings;
     
     std::map<uint64_t, bool>request_history;
+
+    
 
     int udp_fd, epoll_fd;
     struct sockaddr_in addr;
@@ -292,7 +336,7 @@ int main(int argc, char** argv) {
 
     addr.sin_family = AF_INET; // IPV4
     addr.sin_addr.s_addr = INADDR_ANY; // allows any incoming connection
-    addr.sin_port = htons(LISTEN_PORT); // convert to network byte order
+    addr.sin_port = htons(listen_port); // convert to network byte order
 
     if (bind(udp_fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         perror("Bind");
@@ -329,14 +373,14 @@ int main(int argc, char** argv) {
             }
 
             // Use a random number generator with a uniform distribution
-            std::random_device rd;
-            std::mt19937 gen(rd());  // Seed RNG
-            std::uniform_int_distribution<int> dis(0, 1);
+            // std::random_device rd;
+            // std::mt19937 gen(rd());  // Seed RNG
+            // std::uniform_int_distribution<int> dis(0, 1);
 
-            if (dis(gen) == 0) {  // 50% chance
-                std::cout << "Simulated packet loss! Ignoring request.\n";
-                continue;
-            }
+            // if (dis(gen) == 0) {  // 50% chance
+            //     std::cout << "Simulated packet loss! Ignoring request.\n";
+            //     continue;
+            // }
 
             bool is_little_endian = check_endian(buffer);
             struct Req* request_header = (struct Req*)(buffer + 1);
@@ -368,6 +412,7 @@ int main(int argc, char** argv) {
                 
                 reply_header->request_id = request_id;
                 if (reply_data.has_value()) {
+                    std::cout << reply_data.value() << '\n';
                     reply_header->status_code = 0;
                     unsigned char* payload = (reply_buffer + 1 + sizeof(Rep));
                     std::size_t payload_len = strlen(reply_data.value().c_str());
